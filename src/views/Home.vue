@@ -39,16 +39,97 @@
         </div>
         
         <div class="card-footer">
-          <button class="upload-btn" @click="handleUpload(server)">
-            <span class="upload-icon">↑</span>
-            上传
-          </button>
+          <div class="upload-actions">
+            <template v-if="!server.uploading">
+              <button 
+                class="upload-btn" 
+                @click="handleUpload(server)"
+              >
+                <span class="upload-icon">↑</span>
+                上传
+              </button>
+            </template>
+            <template v-else>
+              <button 
+                class="cancel-btn" 
+                @click="handleCancelUpload(server)"
+              >
+                <span class="cancel-icon">×</span>
+                取消
+              </button>
+              <button 
+                class="log-btn" 
+                @click="handleViewLog(server)"
+              >
+                查看日志
+              </button>
+            </template>
+          </div>
+          
+          <!-- 进度条 -->
+          <div v-if="server.uploadProgress" class="upload-progress-container">
+            <div class="progress-info">
+              <span class="progress-text">
+                {{ server.uploadProgress.current }}/{{ server.uploadProgress.total }} 
+                ({{ server.uploadProgress.progress }}%)
+              </span>
+              <span v-if="server.uploadProgress.fileName" class="current-file">
+                正在上传: {{ server.uploadProgress.fileName }}
+              </span>
+            </div>
+            <div class="progress-bar">
+              <div 
+                class="progress-fill" 
+                :style="{ width: server.uploadProgress.progress + '%' }"
+              ></div>
+            </div>
+          </div>
+          
+          <div v-if="server.uploadStatus" :class="['upload-status', server.uploadStatus.type]">
+            {{ server.uploadStatus.message }}
+          </div>
         </div>
       </div>
       
       <div v-if="servers.length === 0" class="empty-state">
         <p>暂无服务器配置</p>
         <button class="add-btn" @click="handleAddServer">添加第一个服务器</button>
+      </div>
+    </div>
+
+    <!-- 日志侧边栏 -->
+    <div 
+      v-if="showLogPanel && currentLogServer" 
+      class="log-panel-overlay" 
+      @click="handleCloseLogPanel"
+    >
+      <div class="log-panel" @click.stop>
+        <div class="log-panel-header">
+          <div class="log-title-group">
+            <h2>上传日志</h2>
+            <span class="log-subtitle">{{ currentLogServer.name }}</span>
+          </div>
+          <button class="close-btn" @click="handleCloseLogPanel">×</button>
+        </div>
+        <div class="log-panel-body">
+          <div class="log-content">
+            <div 
+              v-if="serverLogs[currentLogServer.id] && serverLogs[currentLogServer.id].length"
+              class="log-lines"
+            >
+              <div 
+                v-for="(line, index) in serverLogs[currentLogServer.id]" 
+                :key="index" 
+                class="log-line"
+              >
+                {{ line }}
+              </div>
+            </div>
+            <div v-else class="log-empty">
+              暂无日志
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -154,6 +235,11 @@ const servers = ref([])
 const showDialog = ref(false)
 const editingServer = ref(null)
 
+// 日志侧边栏
+const showLogPanel = ref(false)
+const currentLogServer = ref(null)
+const serverLogs = ref({})
+
 // 表单数据
 const formData = ref({
   name: '',
@@ -164,12 +250,38 @@ const formData = ref({
   localPath: ''
 })
 
+// 确保日志数组存在
+const ensureServerLog = (serverId) => {
+  if (!serverLogs.value[serverId]) {
+    serverLogs.value[serverId] = []
+  }
+}
+
+// 打开日志侧边栏
+const handleViewLog = (server) => {
+  currentLogServer.value = server
+  ensureServerLog(server.id)
+  showLogPanel.value = true
+}
+
+// 关闭日志侧边栏
+const handleCloseLogPanel = () => {
+  showLogPanel.value = false
+}
+
 // 从缓存加载数据
 const loadServers = () => {
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
     if (stored) {
-      servers.value = JSON.parse(stored)
+      const loadedServers = JSON.parse(stored)
+      // 为每个服务器初始化上传状态
+      servers.value = loadedServers.map(server => ({
+        ...server,
+        uploading: false,
+        uploadProgress: null,
+        uploadStatus: null
+      }))
     }
   } catch (error) {
     console.error('加载服务器数据失败:', error)
@@ -242,7 +354,10 @@ const handleSubmit = () => {
     // 新增模式
     const newServer = {
       id: Date.now(),
-      ...formData.value
+      ...formData.value,
+      uploading: false,
+      uploadProgress: null,
+      uploadStatus: null
     }
     servers.value.push(newServer)
   }
@@ -260,10 +375,114 @@ const handleDelete = (id) => {
 }
 
 // 上传文件
-const handleUpload = (server) => {
-  console.log('上传到服务器:', server)
-  // TODO: 实现上传逻辑
-  alert(`准备上传到服务器: ${server.name}`)
+const handleUpload = async (server) => {
+  // 验证服务器配置
+  if (!server.address || !server.ftpUsername || !server.ftpPassword || !server.serverPath || !server.localPath) {
+    alert('服务器配置不完整，请先编辑服务器配置')
+    return
+  }
+  
+  // 确认上传
+  if (!confirm(`确定要上传本地文件夹 "${server.localPath}" 到服务器 "${server.name}" 的 "${server.serverPath}" 路径吗？`)) {
+    return
+  }
+  
+  // 初始化上传状态
+  server.uploading = true
+  server.uploadProgress = null
+  server.uploadStatus = null
+  
+  try {
+    if (!window.electronAPI || !window.electronAPI.uploadFiles) {
+      throw new Error('Electron API 未可用，请在 Electron 环境中使用')
+    }
+    
+    const result = await window.electronAPI.uploadFiles({
+      id: server.id,
+      address: server.address,
+      ftpUsername: server.ftpUsername,
+      ftpPassword: server.ftpPassword,
+      serverPath: server.serverPath,
+      localPath: server.localPath
+    })
+    
+    // 根据结果设置状态
+    if (result.fileCount > 0) {
+      // 有文件上传成功
+      if (result.failedCount > 0) {
+        // 有部分文件失败，显示警告
+        server.uploadStatus = {
+          type: 'warning',
+          message: result.message
+        }
+        alert(result.message)
+      } else {
+        // 全部成功
+        server.uploadStatus = {
+          type: 'success',
+          message: result.message
+        }
+        alert(result.message)
+      }
+    } else {
+      // 没有文件上传成功
+      // 检查是否是取消操作
+      if (result.cancelled) {
+        server.uploadStatus = {
+          type: 'warning',
+          message: '上传已取消'
+        }
+      } else {
+        server.uploadStatus = {
+          type: 'error',
+          message: result.message || '上传失败：没有文件成功上传'
+        }
+        alert(result.message || '上传失败：没有文件成功上传')
+      }
+    }
+  } catch (error) {
+    console.error('上传失败:', error)
+    const errorMessage = error.message || '上传过程中发生未知错误'
+    const isCancelled = errorMessage.includes('上传已取消') || errorMessage === 'cancelled'
+    
+    if (!isCancelled) {
+      server.uploadStatus = {
+        type: 'error',
+        message: errorMessage
+      }
+      alert(`上传失败: ${errorMessage}`)
+    } else {
+      server.uploadStatus = {
+        type: 'warning',
+        message: '上传已取消'
+      }
+    }
+    server.uploading = false
+  } finally {
+    server.uploading = false
+  }
+}
+
+// 取消上传
+const handleCancelUpload = async (server) => {
+  if (!confirm('确定要取消上传吗？')) {
+    return
+  }
+  
+  try {
+    if (window.electronAPI && window.electronAPI.cancelUpload) {
+      await window.electronAPI.cancelUpload(server.id)
+      server.uploading = false
+      server.uploadProgress = null
+      server.uploadStatus = {
+        type: 'warning',
+        message: '上传已取消'
+      }
+    }
+  } catch (error) {
+    console.error('取消上传失败:', error)
+    alert(`取消上传失败: ${error.message}`)
+  }
 }
 
 // 选择文件夹
@@ -290,9 +509,59 @@ const handleSelectFolder = async () => {
   }
 }
 
+// 设置全局进度监听器（只设置一次）
+const setupProgressListener = () => {
+  if (window.electronAPI && window.electronAPI.onUploadProgress) {
+    window.electronAPI.onUploadProgress((data) => {
+      // 找到对应的服务器并更新进度
+      const server = servers.value.find(s => s.id === data.serverId)
+      if (!server) return
+
+      // 初始化日志
+      ensureServerLog(data.serverId)
+      const logs = serverLogs.value[data.serverId]
+      const time = new Date().toLocaleTimeString()
+
+      if (data.error) {
+        server.uploadStatus = {
+          type: 'error',
+          message: `上传失败: ${data.error}`
+        }
+        server.uploading = false
+        logs.push(`[${time}] 错误：${data.error}`)
+      } else if (data.completed) {
+        server.uploading = false
+        server.uploadProgress = null
+        logs.push(`[${time}] 上传完成，成功 ${data.fileCount} 个文件，失败 ${data.failedCount} 个文件`)
+      } else if (data.cancelled) {
+        server.uploading = false
+        server.uploadProgress = null
+        server.uploadStatus = {
+          type: 'warning',
+          message: '上传已取消'
+        }
+        logs.push(`[${time}] 上传已取消`)
+      } else if (typeof data.current === 'number' && typeof data.total === 'number') {
+        server.uploadProgress = {
+          current: data.current || 0,
+          total: data.total || 0,
+          progress: data.progress || 0,
+          fileName: data.fileName || ''
+        }
+        if (data.fileName) {
+          logs.push(
+            `[${time}] 上传 ${data.fileName} (${server.uploadProgress.current}/${server.uploadProgress.total}，${server.uploadProgress.progress}%)`
+          )
+        }
+      }
+    })
+  }
+}
+
 // 组件挂载时加载数据
 onMounted(() => {
   loadServers()
+  setupProgressListener()
 })
 </script>
 
@@ -458,9 +727,138 @@ onMounted(() => {
   transform: translateY(0);
 }
 
+.upload-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.cancel-btn {
+  width: 100%;
+  padding: 0.75rem;
+  background: #ff6b6b;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: all 0.2s;
+}
+
+.cancel-btn:hover {
+  background: #ff5252;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(255, 107, 107, 0.3);
+}
+
+.cancel-btn:active {
+  transform: translateY(0);
+}
+
+.cancel-icon {
+  font-size: 1.2rem;
+  font-weight: bold;
+  line-height: 1;
+}
+
+.log-btn {
+  width: 100%;
+  padding: 0.75rem;
+  background: #f0f0f0;
+  color: #2c3e50;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: all 0.2s;
+}
+
+.log-btn:hover {
+  background: #e0e0e0;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+.log-btn:active {
+  transform: translateY(0);
+}
+
 .upload-icon {
   font-size: 1.1rem;
   font-weight: bold;
+}
+
+.upload-status {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+.upload-status.success {
+  background: #d4edda;
+  color: #155724;
+}
+
+.upload-status.warning {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.upload-status.error {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.upload-progress-container {
+  margin-top: 0.75rem;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.progress-text {
+  color: #2c3e50;
+  font-weight: 500;
+}
+
+.current-file {
+  color: #666;
+  font-size: 0.8rem;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background: #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #42b983, #35a372);
+  border-radius: 4px;
+  transition: width 0.3s ease;
 }
 
 .empty-state {
@@ -653,6 +1051,83 @@ onMounted(() => {
 .submit-btn {
   background: #42b983;
   color: white;
+}
+
+/* 日志侧边栏 */
+.log-panel-overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 900;
+}
+
+.log-panel {
+  width: 420px;
+  max-width: 100%;
+  background: #1e1e1e;
+  color: #f5f5f5;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -2px 0 10px rgba(0, 0, 0, 0.4);
+}
+
+.log-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #333;
+}
+
+.log-title-group h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.log-subtitle {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: #bbbbbb;
+}
+
+.log-panel-body {
+  flex: 1;
+  padding: 0.75rem 1.25rem 1.25rem;
+  overflow: hidden;
+}
+
+.log-content {
+  background: #111;
+  border-radius: 4px;
+  padding: 0.75rem;
+  height: 100%;
+  overflow-y: auto;
+  font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
+  font-size: 0.8rem;
+}
+
+.log-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.log-empty {
+  text-align: center;
+  color: #888;
+  padding: 1.5rem 0;
 }
 
 .submit-btn:hover {

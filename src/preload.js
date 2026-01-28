@@ -4,5 +4,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  selectFolder: () => ipcRenderer.invoke('select-folder')
+  selectFolder: () => ipcRenderer.invoke('select-folder'),
+  uploadFiles: (serverConfig) => ipcRenderer.invoke('upload-files', serverConfig),
+  cancelUpload: (serverId) => ipcRenderer.invoke('cancel-upload', serverId),
+  onUploadProgress: (callback) => {
+    ipcRenderer.on('upload-progress', (event, data) => callback(data));
+  },
+  removeUploadProgressListener: () => {
+    ipcRenderer.removeAllListeners('upload-progress');
+  }
 });
