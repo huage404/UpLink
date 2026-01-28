@@ -36,6 +36,7 @@
   "dependencies": {
     "basic-ftp": "^5.1.0",
     "electron-squirrel-startup": "^1.0.1",
+    "ssh2-sftp-client": "^11.0.0",
     "vue-router": "^4.6.4"
   }
 }

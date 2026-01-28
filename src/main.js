@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import started from 'electron-squirrel-startup';
 import { Client } from 'basic-ftp';
+import SftpClient from 'ssh2-sftp-client';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 if (started) {
@@ -64,70 +65,218 @@ ipcMain.handle('cancel-upload', async (event, serverId) => {
   return { success: false, message: '未找到上传任务' };
 });
 
-// FTP 上传处理函数
+// FTP / SFTP 上传处理函数
 ipcMain.handle('upload-files', async (event, serverConfig) => {
-  const client = new Client();
   const serverId = serverConfig.id;
-  
-  // 保存上传任务
+  // 连接模式：ftp / ftps-explicit / ftps-implicit / sftp
+  const connectionMode = serverConfig.connectionMode || 'ftp';
+
+  // 解析可选的文件过滤规则（正则字符串）
+  let filterRegex = null;
+  if (serverConfig.filterRule) {
+    try {
+      filterRegex = new RegExp(serverConfig.filterRule);
+    } catch (error) {
+      return {
+        success: false,
+        message: `过滤规则不合法: ${error.message}`,
+        error: error.message
+      };
+    }
+  }
+
+  // 检查本地路径是否存在
+  if (!fs.existsSync(serverConfig.localPath)) {
+    return {
+      success: false,
+      message: `本地路径不存在: ${serverConfig.localPath}`,
+      error: `本地路径不存在: ${serverConfig.localPath}`
+    };
+  }
+
+  // SFTP 分支
+  if (connectionMode === 'sftp') {
+    const sftp = new SftpClient();
+    // 保存上传任务
+    activeUploads.set(serverId, { client: sftp, cancelled: false });
+
+    try {
+      // 解析服务器地址和端口
+      const addressParts = serverConfig.address.split(':');
+      const host = addressParts[0];
+      const port = addressParts[1] ? parseInt(addressParts[1], 10) : 22;
+
+      await sftp.connect({
+        host,
+        port,
+        username: serverConfig.ftpUsername,
+        password: serverConfig.ftpPassword
+      });
+
+      // 规范化服务器路径
+      let serverPath = serverConfig.serverPath.replace(/\\/g, '/').replace(/\/$/, '');
+      if (!serverPath.startsWith('/')) {
+        serverPath = '/' + serverPath;
+      }
+
+      // 统计总文件数（考虑过滤规则）
+      const totalFiles = countFiles(serverConfig.localPath, filterRegex);
+
+      const sendProgress = (current, total, fileName) => {
+        const uploadTask = activeUploads.get(serverId);
+        if (uploadTask && uploadTask.cancelled) {
+          throw new Error('上传已取消');
+        }
+
+        const progress = total > 0 ? Math.round((current / total) * 100) : 0;
+        if (event && event.sender) {
+          event.sender.send('upload-progress', {
+            serverId: serverConfig.id,
+            current,
+            total,
+            progress,
+            fileName
+          });
+        }
+      };
+
+      const uploadResult = await uploadDirectorySftp(
+        sftp,
+        serverConfig.localPath,
+        serverPath,
+        [],
+        sendProgress,
+        0,
+        totalFiles,
+        serverId,
+        filterRegex
+      );
+
+      let message = `上传完成！成功: ${uploadResult.fileCount} 个文件`;
+      if (uploadResult.failedCount > 0) {
+        const serverPermissionErrors = uploadResult.failedFiles.filter(f => f.includes('[服务器权限错误]'));
+        const localErrors = uploadResult.failedFiles.filter(f => f.includes('[本地'));
+
+        message += `，跳过: ${uploadResult.failedCount} 个文件`;
+        if (serverPermissionErrors.length > 0) {
+          message += `（其中 ${serverPermissionErrors.length} 个因服务器权限不足）`;
+        }
+        if (localErrors.length > 0) {
+          message += `（其中 ${localErrors.length} 个因本地文件问题）`;
+        }
+      }
+      if (uploadResult.failedFiles.length > 0 && uploadResult.failedFiles.length <= 10) {
+        message += `\n\n跳过的文件:\n${uploadResult.failedFiles.join('\n')}`;
+      } else if (uploadResult.failedFiles.length > 10) {
+        message += `\n\n跳过的文件（前10个）:\n${uploadResult.failedFiles.slice(0, 10).join('\n')}\n...还有 ${uploadResult.failedFiles.length - 10} 个文件`;
+      }
+
+      if (event && event.sender) {
+        event.sender.send('upload-progress', {
+          serverId: serverConfig.id,
+          completed: true,
+          fileCount: uploadResult.fileCount,
+          failedCount: uploadResult.failedCount
+        });
+      }
+
+      return {
+        success: uploadResult.fileCount > 0,
+        message,
+        fileCount: uploadResult.fileCount,
+        failedCount: uploadResult.failedCount,
+        failedFiles: uploadResult.failedFiles
+      };
+    } catch (error) {
+      const uploadTask = activeUploads.get(serverId);
+      const isCancelled = uploadTask && uploadTask.cancelled;
+
+      if (event && event.sender) {
+        event.sender.send('upload-progress', {
+          serverId: serverConfig.id,
+          error: isCancelled ? '上传已取消' : error.message,
+          cancelled: isCancelled
+        });
+      }
+
+      return {
+        success: false,
+        message: isCancelled ? '上传已取消' : `上传失败: ${error.message}`,
+        error: isCancelled ? 'cancelled' : error.message,
+        cancelled: isCancelled
+      };
+    } finally {
+      activeUploads.delete(serverId);
+      try {
+        await sftp.end();
+      } catch (error) {
+        // 忽略关闭错误
+      }
+    }
+  }
+
+  // FTP / FTPS 分支
+  const client = new Client();
   activeUploads.set(serverId, { client, cancelled: false });
-  
+
   try {
     // 解析服务器地址和端口
     const addressParts = serverConfig.address.split(':');
     const host = addressParts[0];
-    const port = addressParts[1] ? parseInt(addressParts[1], 10) : 21;
-    
-    // 检查本地路径是否存在
-    if (!fs.existsSync(serverConfig.localPath)) {
-      throw new Error(`本地路径不存在: ${serverConfig.localPath}`);
-    }
-    
+    let port = addressParts[1] ? parseInt(addressParts[1], 10) : undefined;
+
     // 连接 FTP 服务器
-    // 根据端口判断是否使用安全连接
-    // 990 = 隐式 FTPS, 21 = 可能是显式 FTPS (FTPES)
+    // 根据连接模式决定 secure 与默认端口
     let secureMode = false;
-    if (port === 990) {
-      secureMode = 'implicit'; // 隐式 TLS
-    } else if (port === 21) {
-      // 端口 21 可能是普通 FTP 或显式 FTPS，先尝试显式 FTPS
-      secureMode = true; // 显式 TLS (FTPES)
+    if (connectionMode === 'ftps-implicit') {
+      secureMode = 'implicit';
+      if (!port) port = 990;
+    } else if (connectionMode === 'ftps-explicit') {
+      secureMode = true;
+      if (!port) port = 21;
+    } else {
+      // 普通 FTP
+      secureMode = false;
+      if (!port) port = 21;
     }
-    
+
     await client.access({
       host: host,
       port: port,
       user: serverConfig.ftpUsername,
       password: serverConfig.ftpPassword,
       secure: secureMode,
-      secureOptions: {
-        rejectUnauthorized: false // 允许自签名证书，解决 "self signed certificate" 错误
-      }
+      secureOptions: secureMode
+        ? {
+            // 允许自签名证书，解决 "self signed certificate" 错误
+            rejectUnauthorized: false
+          }
+        : undefined
     });
-    
+
     // 规范化服务器路径（确保使用正斜杠，移除末尾斜杠）
     let serverPath = serverConfig.serverPath.replace(/\\/g, '/').replace(/\/$/, '');
     if (!serverPath.startsWith('/')) {
       serverPath = '/' + serverPath; // 确保是绝对路径
     }
-    
+
     // 确保服务器路径存在
     try {
       await client.ensureDir(serverPath);
     } catch (error) {
       // 如果创建目录失败，可能是路径已存在或权限问题，继续尝试上传
     }
-    
+
     // 切换到目标目录
     try {
       await client.cd(serverPath);
     } catch (error) {
       // 如果切换失败，尝试使用根目录或当前目录
     }
-    
-    // 统计总文件数（用于进度计算）
-    const totalFiles = countFiles(serverConfig.localPath);
-    
+
+    // 统计总文件数（用于进度计算，考虑过滤规则）
+    const totalFiles = countFiles(serverConfig.localPath, filterRegex);
+
     // 发送进度更新函数
     const sendProgress = (current, total, fileName) => {
       // 检查是否已取消
@@ -135,7 +284,7 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
       if (uploadTask && uploadTask.cancelled) {
         throw new Error('上传已取消');
       }
-      
+
       const progress = total > 0 ? Math.round((current / total) * 100) : 0;
       if (event && event.sender) {
         event.sender.send('upload-progress', {
@@ -147,19 +296,20 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
         });
       }
     };
-    
+
     // 上传文件
     const uploadResult = await uploadDirectory(
-      client, 
-      serverConfig.localPath, 
-      serverPath, 
-      [], 
+      client,
+      serverConfig.localPath,
+      serverPath,
+      [],
       sendProgress,
       0,
       totalFiles,
-      serverId
+      serverId,
+      filterRegex
     );
-    
+
     // 构建返回消息
     let message = `上传完成！成功: ${uploadResult.fileCount} 个文件`;
     if (uploadResult.failedCount > 0) {
@@ -167,7 +317,7 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
       const serverErrors = uploadResult.failedFiles.filter(f => f.includes('[服务器'));
       const localErrors = uploadResult.failedFiles.filter(f => f.includes('[本地'));
       const serverPermissionErrors = uploadResult.failedFiles.filter(f => f.includes('[服务器权限错误]'));
-      
+
       message += `，跳过: ${uploadResult.failedCount} 个文件`;
       if (serverPermissionErrors.length > 0) {
         message += `（其中 ${serverPermissionErrors.length} 个因服务器权限不足）`;
@@ -181,7 +331,7 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
     } else if (uploadResult.failedFiles.length > 10) {
       message += `\n\n跳过的文件（前10个）:\n${uploadResult.failedFiles.slice(0, 10).join('\n')}\n...还有 ${uploadResult.failedFiles.length - 10} 个文件`;
     }
-    
+
     // 发送完成进度
     if (event && event.sender) {
       event.sender.send('upload-progress', {
@@ -191,7 +341,7 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
         failedCount: uploadResult.failedCount
       });
     }
-    
+
     return {
       success: uploadResult.fileCount > 0, // 只要有文件上传成功就返回成功
       message: message,
@@ -203,7 +353,7 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
     // 检查是否是取消操作
     const uploadTask = activeUploads.get(serverId);
     const isCancelled = uploadTask && uploadTask.cancelled;
-    
+
     // 发送错误进度
     if (event && event.sender) {
       event.sender.send('upload-progress', {
@@ -212,7 +362,7 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
         cancelled: isCancelled
       });
     }
-    
+
     return {
       success: false,
       message: isCancelled ? '上传已取消' : `上传失败: ${error.message}`,
@@ -230,15 +380,152 @@ ipcMain.handle('upload-files', async (event, serverConfig) => {
   }
 });
 
-// 统计文件总数（递归）
-function countFiles(dirPath) {
+// SFTP 递归上传目录
+async function uploadDirectorySftp(
+  sftp,
+  localDir,
+  remoteDir,
+  failedFiles = [],
+  sendProgress = null,
+  currentCount = 0,
+  totalFiles = 0,
+  serverId = null,
+  filterRegex = null
+) {
+  let fileCount = 0;
+  let failedCount = 0;
+
+  // 规范化远程目录路径
+  let normalizedRemoteDir = remoteDir.replace(/\\/g, '/').replace(/\/$/, '');
+  if (!normalizedRemoteDir.startsWith('/')) {
+    normalizedRemoteDir = '/' + normalizedRemoteDir;
+  }
+
+  // 确保远程目录存在
+  await ensureRemoteDirSftp(sftp, normalizedRemoteDir);
+
+  // 读取本地目录内容
+  let items;
+  try {
+    items = fs.readdirSync(localDir, { withFileTypes: true });
+  } catch (error) {
+    throw new Error(`无法读取本地目录: ${error.message}`);
+  }
+
+  for (const item of items) {
+    const localPath = path.join(localDir, item.name);
+    const fileName = item.name;
+
+    // 如果有过滤规则，匹配到名称则直接跳过（文件和目录都跳过）
+    if (filterRegex && filterRegex.test(fileName)) {
+      continue;
+    }
+
+    // 检查本地文件/目录是否存在和可访问
+    try {
+      const stats = fs.statSync(localPath);
+      if (!stats.isDirectory() && !stats.isFile()) {
+        continue;
+      }
+    } catch (error) {
+      failedFiles.push(`[本地错误] ${localPath}`);
+      failedCount++;
+      continue;
+    }
+
+    if (item.isDirectory()) {
+      const subRemoteDir = normalizedRemoteDir + '/' + fileName;
+      try {
+        await ensureRemoteDirSftp(sftp, subRemoteDir);
+        const result = await uploadDirectorySftp(
+          sftp,
+          localPath,
+          subRemoteDir,
+          failedFiles,
+          sendProgress,
+          currentCount + fileCount,
+          totalFiles,
+          serverId,
+          filterRegex
+        );
+        fileCount += result.fileCount;
+        failedCount += result.failedCount;
+      } catch (error) {
+        const errorType = error.message && (error.message.includes('Permission') || error.message.includes('permission'))
+          ? '[服务器权限错误]'
+          : '[服务器错误]';
+        failedFiles.push(`${errorType} ${subRemoteDir}/`);
+        failedCount++;
+      }
+    } else if (item.isFile()) {
+      const remoteFilePath = normalizedRemoteDir + '/' + fileName;
+
+      try {
+        fs.accessSync(localPath, fs.constants.R_OK);
+      } catch (error) {
+        failedFiles.push(`[本地错误] ${localPath}`);
+        failedCount++;
+        if (sendProgress) {
+          sendProgress(currentCount + fileCount + 1, totalFiles, fileName);
+        }
+        continue;
+      }
+
+      try {
+        // 上传文件
+        await sftp.fastPut(localPath, remoteFilePath);
+        fileCount++;
+        if (sendProgress) {
+          sendProgress(currentCount + fileCount, totalFiles, fileName);
+        }
+      } catch (error) {
+        const isPermissionError = error.message && (error.message.includes('Permission') || error.message.includes('permission'));
+        const errorType = isPermissionError ? '[服务器权限错误]' : '[服务器错误]';
+
+        failedFiles.push(`${errorType} ${remoteFilePath}`);
+        failedCount++;
+        if (sendProgress) {
+          sendProgress(currentCount + fileCount + 1, totalFiles, fileName);
+        }
+      }
+    }
+  }
+
+  return { fileCount, failedCount, failedFiles };
+}
+
+// 确保 SFTP 远程目录存在
+async function ensureRemoteDirSftp(sftp, remoteDir) {
+  const parts = remoteDir.replace(/\\/g, '/').split('/').filter(Boolean);
+  let current = remoteDir.startsWith('/') ? '/' : '';
+
+  for (const part of parts) {
+    current = current === '/' ? `/${part}` : `${current}/${part}`;
+    try {
+      const exists = await sftp.exists(current);
+      if (!exists) {
+        await sftp.mkdir(current);
+      }
+    } catch (error) {
+      // 如果是权限问题等，抛出去由上层处理
+      throw error;
+    }
+  }
+}
+
+// 统计文件总数（递归，可选过滤规则）
+function countFiles(dirPath, filterRegex = null) {
   let count = 0;
   try {
     const items = fs.readdirSync(dirPath, { withFileTypes: true });
     for (const item of items) {
       const itemPath = path.join(dirPath, item.name);
+      // 有过滤规则时，匹配到名称就跳过
+      if (filterRegex && filterRegex.test(item.name)) {
+        continue;
+      }
       if (item.isDirectory()) {
-        count += countFiles(itemPath);
+        count += countFiles(itemPath, filterRegex);
       } else if (item.isFile()) {
         count++;
       }
@@ -250,7 +537,17 @@ function countFiles(dirPath) {
 }
 
 // 递归上传目录
-async function uploadDirectory(client, localDir, remoteDir, failedFiles = [], sendProgress = null, currentCount = 0, totalFiles = 0, serverId = null) {
+async function uploadDirectory(
+  client,
+  localDir,
+  remoteDir,
+  failedFiles = [],
+  sendProgress = null,
+  currentCount = 0,
+  totalFiles = 0,
+  serverId = null,
+  filterRegex = null
+) {
   let fileCount = 0;
   let failedCount = 0;
   
@@ -294,6 +591,11 @@ async function uploadDirectory(client, localDir, remoteDir, failedFiles = [], se
     const localPath = path.join(localDir, item.name);
     const fileName = item.name;
     
+    // 如果有过滤规则，匹配到名称则直接跳过（文件和目录都跳过）
+    if (filterRegex && filterRegex.test(fileName)) {
+      continue;
+    }
+    
     // 检查本地文件/目录是否存在和可访问
     try {
       const stats = fs.statSync(localPath);
@@ -319,7 +621,8 @@ async function uploadDirectory(client, localDir, remoteDir, failedFiles = [], se
           sendProgress,
           currentCount + fileCount,
           totalFiles,
-          serverId
+          serverId,
+          filterRegex
         );
         fileCount += result.fileCount;
         failedCount += result.failedCount;

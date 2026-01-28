@@ -36,6 +36,13 @@
             <span class="label">本机路径：</span>
             <span class="value">{{ server.localPath }}</span>
           </div>
+          <div 
+            v-if="server.filterRule" 
+            class="info-item"
+          >
+            <span class="label">过滤规则：</span>
+            <span class="value">{{ server.filterRule }}</span>
+          </div>
         </div>
         
         <div class="card-footer">
@@ -145,7 +152,7 @@
           <div class="form-item">
             <label>服务器名字 <span class="required">*</span></label>
             <input 
-              v-model="formData.name" 
+              v-model.trim="formData.name" 
               type="text" 
               placeholder="请输入服务器名字"
               required
@@ -155,7 +162,7 @@
           <div class="form-item">
             <label>服务器地址 <span class="required">*</span></label>
             <input 
-              v-model="formData.address" 
+              v-model.trim="formData.address" 
               type="text" 
               placeholder="例如：192.168.1.100:21"
               required
@@ -163,9 +170,19 @@
           </div>
           
           <div class="form-item">
+            <label>连接模式 <span class="required">*</span></label>
+            <select v-model="formData.connectionMode">
+              <option value="ftp">普通 FTP（不加密）</option>
+              <option value="ftps-explicit">显式 FTPS（FTPES，通常端口 21）</option>
+              <option value="ftps-implicit">隐式 FTPS（通常端口 990）</option>
+              <option value="sftp">SFTP（基于 SSH，通常端口 22）</option>
+            </select>
+          </div>
+          
+          <div class="form-item">
             <label>FTP 账号名 <span class="required">*</span></label>
             <input 
-              v-model="formData.ftpUsername" 
+              v-model.trim="formData.ftpUsername" 
               type="text" 
               placeholder="请输入 FTP 账号名"
               required
@@ -174,18 +191,27 @@
           
           <div class="form-item">
             <label>FTP 密码 <span class="required">*</span></label>
-            <input 
-              v-model="formData.ftpPassword" 
-              type="password" 
-              placeholder="请输入 FTP 密码"
-              required
-            />
+            <div class="password-wrapper">
+              <input 
+                v-model.trim="formData.ftpPassword" 
+                :type="showPassword ? 'text' : 'password'" 
+                placeholder="请输入 FTP 密码"
+                required
+              />
+              <button
+                type="button"
+                class="password-toggle-btn"
+                @click="showPassword = !showPassword"
+              >
+                {{ showPassword ? '隐藏' : '显示' }}
+              </button>
+            </div>
           </div>
           
           <div class="form-item">
             <label>服务器路径 <span class="required">*</span></label>
             <input 
-              v-model="formData.serverPath" 
+              v-model.trim="formData.serverPath" 
               type="text" 
               placeholder="例如：/var/www/html"
               required
@@ -196,7 +222,7 @@
             <label>本机路径 <span class="required">*</span></label>
             <div class="path-selector">
               <input 
-                v-model="formData.localPath" 
+                v-model.trim="formData.localPath" 
                 type="text" 
                 placeholder="请选择文件夹"
                 readonly
@@ -211,6 +237,18 @@
                 选择文件夹
               </button>
             </div>
+          </div>
+          
+          <div class="form-item">
+            <label>文件过滤规则（可选）</label>
+            <input
+              v-model.trim="formData.filterRule"
+              type="text"
+              placeholder="输入正则表达式，例如：\\.log$ 或 node_modules"
+            />
+            <p class="form-item-desc">
+              匹配到的文件或文件夹将被跳过（不上传）。
+            </p>
           </div>
           
           <div class="form-actions">
@@ -247,8 +285,13 @@ const formData = ref({
   ftpUsername: '',
   ftpPassword: '',
   serverPath: '',
-  localPath: ''
+  localPath: '',
+  connectionMode: 'ftp', // 连接模式：ftp / ftps-explicit / ftps-implicit
+  filterRule: '' // 文件过滤规则（正则字符串，可选）
 })
+
+// 密码显示控制
+const showPassword = ref(false)
 
 // 确保日志数组存在
 const ensureServerLog = (serverId) => {
@@ -278,6 +321,8 @@ const loadServers = () => {
       // 为每个服务器初始化上传状态
       servers.value = loadedServers.map(server => ({
         ...server,
+        // 兼容旧数据，没有 connectionMode 时默认使用普通 FTP
+        connectionMode: server.connectionMode || 'ftp',
         uploading: false,
         uploadProgress: null,
         uploadStatus: null
@@ -306,8 +351,11 @@ const handleAddServer = () => {
     ftpUsername: '',
     ftpPassword: '',
     serverPath: '',
-    localPath: ''
+    localPath: '',
+    connectionMode: 'ftp',
+    filterRule: ''
   }
+  showPassword.value = false
   showDialog.value = true
 }
 
@@ -320,8 +368,11 @@ const handleEdit = (server) => {
     ftpUsername: server.ftpUsername,
     ftpPassword: server.ftpPassword || '',
     serverPath: server.serverPath,
-    localPath: server.localPath
+    localPath: server.localPath,
+    connectionMode: server.connectionMode || 'ftp',
+    filterRule: server.filterRule || ''
   }
+  showPassword.value = false
   showDialog.value = true
 }
 
@@ -335,26 +386,41 @@ const handleCloseDialog = () => {
     ftpUsername: '',
     ftpPassword: '',
     serverPath: '',
-    localPath: ''
+    localPath: '',
+    connectionMode: 'ftp',
+    filterRule: ''
   }
+  showPassword.value = false
 }
 
 // 提交表单
 const handleSubmit = () => {
+  // 提交前对字符串字段做 trim 处理
+  const trimmed = {
+    ...formData.value,
+    name: formData.value.name.trim(),
+    address: formData.value.address.trim(),
+    ftpUsername: formData.value.ftpUsername.trim(),
+    ftpPassword: formData.value.ftpPassword.trim(),
+    serverPath: formData.value.serverPath.trim(),
+    localPath: formData.value.localPath.trim(),
+    filterRule: (formData.value.filterRule || '').trim()
+  }
+
   if (editingServer.value) {
     // 编辑模式
     const index = servers.value.findIndex(s => s.id === editingServer.value.id)
     if (index !== -1) {
       servers.value[index] = {
         ...editingServer.value,
-        ...formData.value
+        ...trimmed
       }
     }
   } else {
     // 新增模式
     const newServer = {
       id: Date.now(),
-      ...formData.value,
+      ...trimmed,
       uploading: false,
       uploadProgress: null,
       uploadStatus: null
@@ -378,7 +444,6 @@ const handleDelete = (id) => {
 const handleUpload = async (server) => {
   // 验证服务器配置
   if (!server.address || !server.ftpUsername || !server.ftpPassword || !server.serverPath || !server.localPath) {
-    alert('服务器配置不完整，请先编辑服务器配置')
     return
   }
   
@@ -403,7 +468,9 @@ const handleUpload = async (server) => {
       ftpUsername: server.ftpUsername,
       ftpPassword: server.ftpPassword,
       serverPath: server.serverPath,
-      localPath: server.localPath
+      localPath: server.localPath,
+      connectionMode: server.connectionMode || 'ftp',
+      filterRule: server.filterRule || ''
     })
     
     // 根据结果设置状态
@@ -415,14 +482,12 @@ const handleUpload = async (server) => {
           type: 'warning',
           message: result.message
         }
-        alert(result.message)
       } else {
         // 全部成功
         server.uploadStatus = {
           type: 'success',
           message: result.message
         }
-        alert(result.message)
       }
     } else {
       // 没有文件上传成功
@@ -437,7 +502,6 @@ const handleUpload = async (server) => {
           type: 'error',
           message: result.message || '上传失败：没有文件成功上传'
         }
-        alert(result.message || '上传失败：没有文件成功上传')
       }
     }
   } catch (error) {
@@ -450,7 +514,6 @@ const handleUpload = async (server) => {
         type: 'error',
         message: errorMessage
       }
-      alert(`上传失败: ${errorMessage}`)
     } else {
       server.uploadStatus = {
         type: 'warning',
@@ -481,7 +544,6 @@ const handleCancelUpload = async (server) => {
     }
   } catch (error) {
     console.error('取消上传失败:', error)
-    alert(`取消上传失败: ${error.message}`)
   }
 }
 
@@ -500,12 +562,10 @@ const handleSelectFolder = async () => {
       // 降级方案：使用 HTML5 文件选择器（仅用于开发测试）
       console.error('Electron API 未可用')
       console.log('window 对象:', window)
-      alert('Electron API 未可用，请在 Electron 环境中使用')
     }
   } catch (error) {
     console.error('选择文件夹失败:', error)
     console.error('错误详情:', error.message, error.stack)
-    alert(`选择文件夹失败: ${error.message || '未知错误'}`)
   }
 }
 
@@ -613,6 +673,9 @@ onMounted(() => {
   padding: 1rem;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
   transition: box-shadow 0.3s, transform 0.2s;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 .server-card:hover {
@@ -695,7 +758,7 @@ onMounted(() => {
 }
 
 .card-footer {
-  margin-top: 1rem;
+  margin-top: auto;
   padding-top: 1rem;
   border-top: 1px solid #e0e0e0;
 }
@@ -970,6 +1033,12 @@ onMounted(() => {
   font-size: 0.9rem;
 }
 
+.form-item-desc {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: #777;
+}
+
 .required {
   color: #ff6b6b;
 }
@@ -982,6 +1051,22 @@ onMounted(() => {
   font-size: 1rem;
   transition: border-color 0.2s;
   box-sizing: border-box;
+}
+
+.form-item select {
+  width: 100%;
+  padding: 0.75rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 1rem;
+  transition: border-color 0.2s;
+  box-sizing: border-box;
+  background-color: #fff;
+}
+
+.form-item select:focus {
+  outline: none;
+  border-color: #42b983;
 }
 
 .form-item input:focus {
@@ -1002,6 +1087,30 @@ onMounted(() => {
 
 .path-input:hover {
   background-color: #eeeeee;
+}
+
+.password-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.password-wrapper input {
+  flex: 1;
+}
+
+.password-toggle-btn {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  background: #f5f5f5;
+  cursor: pointer;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.password-toggle-btn:hover {
+  background: #e0e0e0;
 }
 
 .select-btn {
@@ -1032,6 +1141,7 @@ onMounted(() => {
 .cancel-btn,
 .submit-btn {
   padding: 0.75rem 1.5rem;
+  min-width: 120px;
   border: none;
   border-radius: 6px;
   font-size: 1rem;
