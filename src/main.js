@@ -78,22 +78,41 @@ ipcMain.handle('cancel-upload', async (event, serverId) => {
   return { success: false, message: '未找到上传任务' };
 });
 
+/**
+ * 解析过滤规则：支持正则字符串，或简单通配如 *.log（匹配以某后缀结尾的文件名）
+ * @param {string} rule
+ * @returns {RegExp|null|Error} 成功返回 RegExp，无规则返回 null，解析失败返回 Error
+ */
+function parseFilterRule(rule) {
+  if (!rule || typeof rule !== 'string' || !rule.trim()) return null;
+  const trimmed = rule.trim();
+  try {
+    return new RegExp(trimmed);
+  } catch (e) {
+    // 尝试简单通配：*.ext -> 以 .ext 结尾
+    if (/^\*\.([a-zA-Z0-9_.-]+)$/.test(trimmed)) {
+      const suffix = trimmed.slice(2).replace(/\./g, '\\.');
+      return new RegExp(suffix + '$');
+    }
+    return new Error(e.message || '无效的过滤规则');
+  }
+}
+
 // FTP / SFTP 上传处理函数
 ipcMain.handle('upload-files', async (event, serverConfig) => {
   const serverId = serverConfig.id;
   // 连接模式：ftp / ftps-explicit / ftps-implicit / sftp
   const connectionMode = serverConfig.connectionMode || 'ftp';
 
-  // 解析可选的文件过滤规则（正则字符串）
+  // 解析可选的文件过滤规则（支持正则或简单通配如 *.log）
   let filterRegex = null;
   if (serverConfig.filterRule) {
-    try {
-      filterRegex = new RegExp(serverConfig.filterRule);
-    } catch (error) {
+    filterRegex = parseFilterRule(serverConfig.filterRule);
+    if (filterRegex instanceof Error) {
       return {
         success: false,
-        message: `过滤规则不合法: ${error.message}`,
-        error: error.message
+        message: `过滤规则不合法: ${filterRegex.message}`,
+        error: filterRegex.message
       };
     }
   }

@@ -171,15 +171,15 @@
       destroy-on-close
       @close="handleCloseDialog"
     >
-      <el-form :model="formData" label-width="100px" label-position="top">
-        <el-form-item label="服务器名字" required>
+      <el-form ref="formRef" :model="formData" :rules="formRules" label-width="100px" label-position="top">
+        <el-form-item label="服务器名字" prop="name" required>
           <el-input v-model.trim="formData.name" placeholder="请输入服务器名字" />
         </el-form-item>
-        <el-form-item label="服务器地址" required>
+        <el-form-item label="服务器地址" prop="address" required>
           <el-input v-model.trim="formData.address" placeholder="例如：192.168.1.100 或 192.168.1.100:21" />
           <div class="form-tip">可带端口（如 :21、:22）；不填端口时将按连接模式使用默认端口。</div>
         </el-form-item>
-        <el-form-item label="连接模式" required>
+        <el-form-item label="连接模式" prop="connectionMode" required>
           <el-select v-model="formData.connectionMode" style="width: 100%">
             <el-option value="ftp" label="普通 FTP（不加密）" />
             <el-option value="ftps-explicit" label="显式 FTPS（FTPES，通常端口 21）" />
@@ -187,10 +187,10 @@
             <el-option value="sftp" label="SFTP（基于 SSH，通常端口 22）" />
           </el-select>
         </el-form-item>
-        <el-form-item label="FTP 账号名" required>
+        <el-form-item label="FTP 账号名" prop="ftpUsername" required>
           <el-input v-model.trim="formData.ftpUsername" placeholder="请输入 FTP 账号名" />
         </el-form-item>
-        <el-form-item label="FTP 密码" required>
+        <el-form-item label="FTP 密码" prop="ftpPassword" required>
           <el-input
             v-model.trim="formData.ftpPassword"
             type="password"
@@ -198,21 +198,38 @@
             show-password
           />
         </el-form-item>
-        <el-form-item label="服务器路径" required>
+        <el-form-item label="服务器路径" prop="serverPath" required>
           <el-input v-model.trim="formData.serverPath" placeholder="例如：/var/www/html" />
         </el-form-item>
-        <el-form-item label="本机路径" required>
+        <el-form-item label="本机路径" prop="localPath" required>
           <div class="path-selector">
             <el-input v-model.trim="formData.localPath" placeholder="请选择文件夹" readonly />
             <el-button type="primary" @click="handleSelectFolder">选择文件夹</el-button>
           </div>
         </el-form-item>
         <el-form-item label="文件过滤规则（可选）">
-          <el-input
-            v-model.trim="formData.filterRule"
-            placeholder="输入正则表达式，例如：\\.log$ 或 node_modules"
-          />
-          <div class="form-tip">匹配到的文件或文件夹将被跳过（不上传）。</div>
+          <div class="filter-rules-editor">
+            <div v-if="formData.filterRuleItems.length" class="filter-tags">
+              <el-tag
+                v-for="(item, index) in formData.filterRuleItems"
+                :key="index"
+                closable
+                size="small"
+                class="filter-tag"
+                @close="removeFilterRule(index)"
+              >
+                {{ item }}
+              </el-tag>
+            </div>
+            <el-input
+              ref="filterRuleInputRef"
+              v-model="filterRuleInput"
+              placeholder="输入文件名、目录名或正则（如 node_modules、*.log），回车添加"
+              class="filter-rule-input"
+              @keyup.enter="addFilterRule"
+            />
+          </div>
+          <div class="form-tip">匹配到的文件或文件夹将被跳过（不上传）。每输入一条规则后按回车添加。</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -231,6 +248,8 @@ import { Plus, Upload, Close, DocumentCopy } from '@element-plus/icons-vue'
 const STORAGE_KEY = 'uplink_servers'
 
 const servers = ref([])
+const filterRuleInput = ref('')
+const filterRuleInputRef = ref(null)
 const showDialog = ref(false)
 const editingServer = ref(null)
 const showImportDialog = ref(false)
@@ -249,8 +268,19 @@ const formData = ref({
   serverPath: '',
   localPath: '',
   connectionMode: 'ftp',
-  filterRule: ''
+  filterRuleItems: []
 })
+
+const formRef = ref(null)
+const formRules = {
+  name: [{ required: true, message: '请输入服务器名字', trigger: 'blur' }],
+  address: [{ required: true, message: '请输入服务器地址', trigger: 'blur' }],
+  connectionMode: [{ required: true, message: '请选择连接模式', trigger: 'change' }],
+  ftpUsername: [{ required: true, message: '请输入 FTP 账号名', trigger: 'blur' }],
+  ftpPassword: [{ required: true, message: '请输入 FTP 密码', trigger: 'blur' }],
+  serverPath: [{ required: true, message: '请输入服务器路径', trigger: 'blur' }],
+  localPath: [{ required: true, message: '请选择本机路径', trigger: 'change' }]
+}
 
 const connectionModeLabels = {
   ftp: 'FTP',
@@ -468,13 +498,14 @@ const handleAddServer = () => {
     serverPath: '',
     localPath: '',
     connectionMode: 'ftp',
-    filterRule: ''
+    filterRuleItems: []
   }
   showDialog.value = true
 }
 
 const handleEdit = (server) => {
   editingServer.value = server
+  const items = (server.filterRule || '').trim().split(/\|/).filter(Boolean)
   formData.value = {
     name: server.name,
     address: server.address,
@@ -483,7 +514,7 @@ const handleEdit = (server) => {
     serverPath: server.serverPath,
     localPath: server.localPath,
     connectionMode: server.connectionMode || 'ftp',
-    filterRule: server.filterRule || ''
+    filterRuleItems: items
   }
   showDialog.value = true
 }
@@ -491,6 +522,7 @@ const handleEdit = (server) => {
 const handleCloseDialog = () => {
   showDialog.value = false
   editingServer.value = null
+  formRef.value?.clearValidate()
   formData.value = {
     name: '',
     address: '',
@@ -499,11 +531,48 @@ const handleCloseDialog = () => {
     serverPath: '',
     localPath: '',
     connectionMode: 'ftp',
-    filterRule: ''
+    filterRuleItems: []
   }
 }
 
-const handleSubmit = () => {
+/** 单条规则转成正则片段：支持 *.ext 简单通配 */
+const ruleItemToPattern = (item) => {
+  const s = (item || '').trim()
+  if (!s) return ''
+  if (/^\*\.([a-zA-Z0-9_.-]+)$/.test(s)) return s.slice(2).replace(/\./g, '\\.') + '$'
+  return s
+}
+
+/** 由已添加的规则列表合并为最终 filterRule 字符串 */
+const buildFilterRule = () => {
+  const parts = formData.value.filterRuleItems
+    .map(ruleItemToPattern)
+    .filter(Boolean)
+  return parts.join('|') || ''
+}
+
+const addFilterRule = () => {
+  const val = filterRuleInput.value.trim()
+  if (!val) return
+  if (formData.value.filterRuleItems.includes(val)) {
+    ElMessage.warning('该规则已存在')
+    return
+  }
+  formData.value.filterRuleItems.push(val)
+  filterRuleInput.value = ''
+  filterRuleInputRef.value?.focus()
+}
+
+const removeFilterRule = (index) => {
+  formData.value.filterRuleItems.splice(index, 1)
+}
+
+const handleSubmit = async () => {
+  try {
+    await formRef.value?.validate()
+  } catch {
+    return
+  }
   const trimmed = {
     ...formData.value,
     name: formData.value.name.trim(),
@@ -512,8 +581,9 @@ const handleSubmit = () => {
     ftpPassword: formData.value.ftpPassword.trim(),
     serverPath: formData.value.serverPath.trim(),
     localPath: formData.value.localPath.trim(),
-    filterRule: (formData.value.filterRule || '').trim()
+    filterRule: buildFilterRule()
   }
+  delete trimmed.filterRuleItems
   if (editingServer.value) {
     const index = servers.value.findIndex(s => s.id === editingServer.value.id)
     if (index !== -1) {
@@ -1048,6 +1118,23 @@ onMounted(() => {
   flex: 1;
 }
 
+.filter-rules-editor {
+  width: 100%;
+}
+.filter-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: 8px;
+}
+.filter-tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filter-rule-input {
+  width: 100%;
+}
 .form-tip {
   font-size: 12px;
   color: var(--el-text-color-secondary);
