@@ -12,69 +12,93 @@
       </div>
     </div>
 
-    <el-row :gutter="16" class="server-list">
-      <el-col v-for="server in servers" :key="server.id" :xs="24" :sm="12" :md="8" :lg="8">
-        <el-card class="server-card" shadow="hover">
-          <template #header>
-            <div class="card-header">
-              <span class="server-name">{{ server.name }}</span>
-              <div class="card-actions">
-                <el-button size="small" link type="primary" @click="handleCopyConfig(server)" title="复制配置">
-                  <el-icon><DocumentCopy /></el-icon>
-                </el-button>
-                <el-button size="small" link @click="handleEdit(server)">编辑</el-button>
-                <el-button size="small" link type="danger" @click="handleDelete(server.id)">删除</el-button>
+    <div v-for="group in serversGroupedByHost" :key="group.host" class="server-group">
+      <div class="server-group-title">
+        <span class="server-group-host">{{ group.host }}</span>
+        <span class="server-group-count">{{ group.servers.length }} 个配置</span>
+      </div>
+      <el-row :gutter="16" class="server-list">
+        <el-col v-for="server in group.servers" :key="server.id" :xs="24" :sm="12" :md="8" :lg="8">
+          <el-card class="server-card" shadow="hover">
+            <template #header>
+              <div class="card-header">
+                <div class="card-header-main">
+                  <span class="server-name">{{ server.name }}</span>
+                  <span class="card-mode-tag">{{ connectionModeLabel(server.connectionMode) }}</span>
+                </div>
+                <div class="card-actions">
+                  <el-button size="small" link type="primary" @click="handleCopyConfig(server)" title="复制配置">
+                    <el-icon><DocumentCopy /></el-icon>
+                  </el-button>
+                  <el-button size="small" link @click="handleEdit(server)">编辑</el-button>
+                  <el-button size="small" link type="danger" @click="handleDelete(server.id)">删除</el-button>
+                </div>
+              </div>
+            </template>
+
+            <div class="card-content">
+              <div class="card-info-list">
+                <div class="card-info-row">
+                  <span class="card-info-label">服务器地址</span>
+                  <span class="card-info-value" :title="server.address">{{ server.address }}</span>
+                </div>
+                <div class="card-info-row">
+                  <span class="card-info-label">FTP 账号</span>
+                  <span class="card-info-value">{{ server.ftpUsername }}</span>
+                </div>
+                <div class="card-info-row">
+                  <span class="card-info-label">服务器路径</span>
+                  <span class="card-info-value card-info-value-path" :title="server.serverPath">{{ server.serverPath }}</span>
+                </div>
+                <div class="card-info-row">
+                  <span class="card-info-label">本机路径</span>
+                  <span class="card-info-value card-info-value-path" :title="server.localPath">{{ server.localPath }}</span>
+                </div>
+                <div v-if="server.filterRule" class="card-info-row">
+                  <span class="card-info-label">过滤规则</span>
+                  <span class="card-info-value">{{ server.filterRule }}</span>
+                </div>
               </div>
             </div>
-          </template>
 
-          <div class="card-content">
-            <el-descriptions :column="1" size="small" border>
-              <el-descriptions-item label="服务器地址">{{ server.address }}</el-descriptions-item>
-              <el-descriptions-item label="FTP 账号">{{ server.ftpUsername }}</el-descriptions-item>
-              <el-descriptions-item label="服务器路径">{{ server.serverPath }}</el-descriptions-item>
-              <el-descriptions-item label="本机路径">{{ server.localPath }}</el-descriptions-item>
-              <el-descriptions-item v-if="server.filterRule" label="过滤规则">{{ server.filterRule }}</el-descriptions-item>
-            </el-descriptions>
-          </div>
+            <div class="card-footer">
+              <div class="upload-actions">
+                <template v-if="!server.uploading">
+                  <el-button class="btn-upload" type="primary" @click="handleUpload(server)">
+                    <el-icon><Upload /></el-icon>
+                    上传
+                  </el-button>
+                </template>
+                <template v-else>
+                  <el-button class="btn-cancel" type="danger" @click="handleCancelUpload(server)">
+                    <el-icon><Close /></el-icon>
+                    取消
+                  </el-button>
+                  <el-button class="btn-log" @click="handleViewLog(server)">查看日志</el-button>
+                </template>
+              </div>
 
-          <div class="card-footer">
-            <div class="upload-actions">
-              <template v-if="!server.uploading">
-                <el-button type="primary" style="width: 100%" @click="handleUpload(server)">
-                  <el-icon><Upload /></el-icon>
-                  上传
-                </el-button>
-              </template>
-              <template v-else>
-                <el-button type="danger" style="width: 100%" @click="handleCancelUpload(server)">
-                  <el-icon><Close /></el-icon>
-                  取消
-                </el-button>
-                <el-button @click="handleViewLog(server)">查看日志</el-button>
-              </template>
+              <el-progress
+                v-if="server.uploadProgress"
+                :percentage="server.uploadProgress.progress"
+                :stroke-width="6"
+                class="card-progress"
+              />
+              <p v-if="server.uploadProgress?.fileName" class="current-file">正在上传: {{ server.uploadProgress.fileName }}</p>
+
+              <el-alert
+                v-if="server.uploadStatus"
+                :title="server.uploadStatus.message"
+                :type="server.uploadStatus.type"
+                show-icon
+                :closable="false"
+                class="card-status-alert"
+              />
             </div>
-
-            <el-progress
-              v-if="server.uploadProgress"
-              :percentage="server.uploadProgress.progress"
-              :stroke-width="8"
-              style="margin-top: 12px"
-            />
-            <p v-if="server.uploadProgress?.fileName" class="current-file">正在上传: {{ server.uploadProgress.fileName }}</p>
-
-            <el-alert
-              v-if="server.uploadStatus"
-              :title="server.uploadStatus.message"
-              :type="server.uploadStatus.type"
-              show-icon
-              :closable="false"
-              style="margin-top: 12px"
-            />
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+          </el-card>
+        </el-col>
+      </el-row>
+    </div>
 
     <el-empty v-if="servers.length === 0" description="暂无服务器配置" class="empty-state">
       <el-button type="primary" @click="handleAddServer">添加第一个服务器</el-button>
@@ -104,6 +128,7 @@
       v-model="showImportDialog"
       title="导入服务器配置"
       width="520px"
+      top="8vh"
       destroy-on-close
       @close="handleCloseImportDialog"
     >
@@ -142,6 +167,7 @@
       v-model="showDialog"
       :title="editingServer ? '编辑服务器' : '添加服务器'"
       width="560px"
+      top="8vh"
       destroy-on-close
       @close="handleCloseDialog"
     >
@@ -150,7 +176,8 @@
           <el-input v-model.trim="formData.name" placeholder="请输入服务器名字" />
         </el-form-item>
         <el-form-item label="服务器地址" required>
-          <el-input v-model.trim="formData.address" placeholder="例如：192.168.1.100:21" />
+          <el-input v-model.trim="formData.address" placeholder="例如：192.168.1.100 或 192.168.1.100:21" />
+          <div class="form-tip">可带端口（如 :21、:22）；不填端口时将按连接模式使用默认端口。</div>
         </el-form-item>
         <el-form-item label="连接模式" required>
           <el-select v-model="formData.connectionMode" style="width: 100%">
@@ -197,7 +224,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Upload, Close, DocumentCopy } from '@element-plus/icons-vue'
 
@@ -223,6 +250,32 @@ const formData = ref({
   localPath: '',
   connectionMode: 'ftp',
   filterRule: ''
+})
+
+const connectionModeLabels = {
+  ftp: 'FTP',
+  'ftps-explicit': 'FTPS',
+  'ftps-implicit': 'FTPS',
+  sftp: 'SFTP'
+}
+const connectionModeLabel = (mode) => connectionModeLabels[mode] || mode || 'FTP'
+
+/** 从 address（如 192.168.1.100:21）中提取主机部分，用于分组 */
+const getAddressHost = (address) => {
+  if (!address || typeof address !== 'string') return ''
+  const idx = address.indexOf(':')
+  return idx === -1 ? address.trim() : address.slice(0, idx).trim()
+}
+
+/** 按服务器地址（IP/主机）分组，便于同一台机器多个配置归类展示 */
+const serversGroupedByHost = computed(() => {
+  const map = new Map()
+  for (const server of servers.value) {
+    const host = getAddressHost(server.address) || '未指定地址'
+    if (!map.has(host)) map.set(host, [])
+    map.get(host).push(server)
+  }
+  return Array.from(map.entries()).map(([host, list]) => ({ host, servers: list }))
 })
 
 const ensureServerLog = (serverId) => {
@@ -658,7 +711,7 @@ onMounted(() => {
   color: var(--el-text-color-primary);
 }
 
-/* 仅在小窗时紧凑：约 900px 以下才生效，全屏保持原样 */
+/* 仅在小窗时紧凑：约 900px 以下才生效 */
 @media (max-width: 900px) {
   .home {
     padding: 16px;
@@ -670,42 +723,48 @@ onMounted(() => {
   .page-title {
     font-size: 1.25rem;
   }
-  .server-list {
-    margin-bottom: 16px;
+  .server-group-title {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
   }
   .server-card :deep(.el-card__header) {
-    padding: 10px 14px;
-  }
-  .server-card :deep(.el-card__body) {
     padding: 12px 14px;
   }
+  .server-card :deep(.el-card__body) {
+    padding: 14px;
+  }
   .server-name {
-    font-size: 0.9rem;
+    font-size: 0.95rem;
   }
-  .card-content {
-    margin-bottom: 10px;
-  }
-  .card-content :deep(.el-descriptions__label),
-  .card-content :deep(.el-descriptions__content) {
-    padding: 4px 8px;
+  .card-info-row {
     font-size: 12px;
   }
+  .card-info-label {
+    width: 72px;
+    font-size: 11px;
+  }
+  .card-info-value-path {
+    font-size: 11px;
+  }
+  .card-content {
+    margin-bottom: 12px;
+  }
   .card-footer {
-    padding-top: 10px;
+    padding-top: 12px;
   }
   .card-footer .el-button {
     padding: 6px 12px;
     font-size: 13px;
   }
-  .card-footer .el-progress {
-    margin-top: 8px;
+  .card-progress {
+    margin-top: 10px;
   }
   .current-file {
-    margin-top: 4px;
+    margin-top: 6px;
     font-size: 11px;
   }
-  .card-footer .el-alert {
-    margin-top: 8px;
+  .card-status-alert {
+    margin-top: 10px;
   }
 }
 
@@ -725,21 +784,23 @@ onMounted(() => {
     font-size: 1.1rem;
   }
   .server-card :deep(.el-card__header) {
-    padding: 8px 12px;
-  }
-  .server-card :deep(.el-card__body) {
     padding: 10px 12px;
   }
-  .server-name {
-    font-size: 0.85rem;
+  .server-card :deep(.el-card__body) {
+    padding: 12px;
   }
-  .card-content :deep(.el-descriptions__label),
-  .card-content :deep(.el-descriptions__content) {
-    padding: 3px 6px;
+  .server-name {
+    font-size: 0.9rem;
+  }
+  .card-info-label {
+    width: 68px;
+    font-size: 11px;
+  }
+  .card-info-value-path {
     font-size: 11px;
   }
   .card-footer {
-    padding-top: 8px;
+    padding-top: 10px;
   }
   .card-footer .el-button {
     padding: 5px 10px;
@@ -753,12 +814,63 @@ onMounted(() => {
   gap: 8px;
 }
 
-.server-list {
+.server-group {
+  margin-bottom: 28px;
+}
+
+.server-group:last-child {
   margin-bottom: 24px;
 }
 
+.server-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 6px 0 10px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.server-group-host {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--el-text-color-primary);
+  letter-spacing: 0.02em;
+}
+
+.server-group-count {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+}
+
+.server-list {
+  margin-bottom: 0;
+}
+
+/* ---------- 卡片整体 ---------- */
 .server-card {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--el-border-color-lighter);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.server-card:hover {
+  border-color: var(--el-border-color);
+}
+
+.server-card :deep(.el-card__header) {
+  padding: 14px 16px;
+  background: var(--el-fill-color-light);
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.server-card :deep(.el-card__body) {
+  padding: 16px;
+  flex: 1;
   display: flex;
   flex-direction: column;
 }
@@ -766,34 +878,110 @@ onMounted(() => {
 .card-header {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.card-header-main {
+  display: flex;
   align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .server-name {
   font-weight: 600;
   font-size: 1rem;
+  color: var(--el-text-color-primary);
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.card-mode-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--el-fill-color);
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+  flex-shrink: 0;
 }
 
 .card-actions {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+  flex-shrink: 0;
 }
 
+/* ---------- 信息列表（替代 descriptions） ---------- */
 .card-content {
   margin-bottom: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
+.card-info-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.card-info-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.card-info-label {
+  flex-shrink: 0;
+  width: 78px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.card-info-value {
+  flex: 1;
+  min-width: 0;
+  color: var(--el-text-color-primary);
+  word-break: break-all;
+}
+
+.card-info-value-path {
+  font-family: var(--el-font-family-mono);
+  font-size: 12px;
+}
+
+/* ---------- 底部操作与状态 ---------- */
 .card-footer {
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: 14px;
   border-top: 1px solid var(--el-border-color-lighter);
 }
 
 .upload-actions {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
+}
+
+.upload-actions .btn-upload,
+.upload-actions .btn-cancel {
+  flex: 1;
+  min-width: 0;
+}
+
+.upload-actions .btn-log {
+  flex-shrink: 0;
+}
+
+.card-progress {
+  margin-top: 12px;
 }
 
 .current-file {
@@ -803,6 +991,10 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.card-status-alert {
+  margin-top: 12px;
 }
 
 .empty-state {
