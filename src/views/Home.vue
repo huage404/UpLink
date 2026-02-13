@@ -626,6 +626,95 @@ onMounted(() => {
   color: var(--el-text-color-primary);
 }
 
+/* 仅在小窗时紧凑：约 900px 以下才生效，全屏保持原样 */
+@media (max-width: 900px) {
+  .home {
+    padding: 16px;
+  }
+  .header {
+    margin-bottom: 16px;
+    gap: 8px;
+  }
+  .page-title {
+    font-size: 1.25rem;
+  }
+  .server-list {
+    margin-bottom: 16px;
+  }
+  .server-card :deep(.el-card__header) {
+    padding: 10px 14px;
+  }
+  .server-card :deep(.el-card__body) {
+    padding: 12px 14px;
+  }
+  .server-name {
+    font-size: 0.9rem;
+  }
+  .card-content {
+    margin-bottom: 10px;
+  }
+  .card-content :deep(.el-descriptions__label),
+  .card-content :deep(.el-descriptions__content) {
+    padding: 4px 8px;
+    font-size: 12px;
+  }
+  .card-footer {
+    padding-top: 10px;
+  }
+  .card-footer .el-button {
+    padding: 6px 12px;
+    font-size: 13px;
+  }
+  .card-footer .el-progress {
+    margin-top: 8px;
+  }
+  .current-file {
+    margin-top: 4px;
+    font-size: 11px;
+  }
+  .card-footer .el-alert {
+    margin-top: 8px;
+  }
+}
+
+@media (max-width: 768px) {
+  .home {
+    padding: 12px;
+  }
+  .header {
+    margin-bottom: 12px;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .header-actions {
+    width: 100%;
+  }
+  .page-title {
+    font-size: 1.1rem;
+  }
+  .server-card :deep(.el-card__header) {
+    padding: 8px 12px;
+  }
+  .server-card :deep(.el-card__body) {
+    padding: 10px 12px;
+  }
+  .server-name {
+    font-size: 0.85rem;
+  }
+  .card-content :deep(.el-descriptions__label),
+  .card-content :deep(.el-descriptions__content) {
+    padding: 3px 6px;
+    font-size: 11px;
+  }
+  .card-footer {
+    padding-top: 8px;
+  }
+  .card-footer .el-button {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+}
+
 .header-actions {
   display: flex;
   align-items: center;
@@ -739,15 +828,5 @@ onMounted(() => {
   font-size: 12px;
   color: var(--el-text-color-secondary);
   margin-top: 4px;
-}
-
-@media (max-width: 768px) {
-  .header {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .header-actions {
-    width: 100%;
-  }
 }
 </style>
