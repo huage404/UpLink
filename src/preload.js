@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFolder: () => ipcRenderer.invoke('select-folder'),
   uploadFiles: (serverConfig) => ipcRenderer.invoke('upload-files', serverConfig),
   cancelUpload: (serverId) => ipcRenderer.invoke('cancel-upload', serverId),
+  exportServersToFile: (jsonString) => ipcRenderer.invoke('export-servers', jsonString),
   onUploadProgress: (callback) => {
     ipcRenderer.on('upload-progress', (event, data) => callback(data));
   },

@@ -37,6 +37,19 @@ const createWindow = () => {
 const activeUploads = new Map();
 
 // IPC handlers - 在 app.whenReady() 之前注册
+ipcMain.handle('export-servers', async (event, jsonString) => {
+  const result = await dialog.showSaveDialog({
+    title: '导出服务器配置',
+    defaultPath: 'uplink-servers.json',
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  });
+  if (!result.canceled && result.filePath) {
+    fs.writeFileSync(result.filePath, jsonString, 'utf-8');
+    return { success: true, path: result.filePath };
+  }
+  return { success: false, canceled: true };
+});
+
 ipcMain.handle('select-folder', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openDirectory'],
