@@ -240,6 +240,17 @@ const getServerConfig = (server) => ({
   filterRule: server.filterRule || ''
 })
 
+/** 判断两份配置是否完全相同（用于去重） */
+const isConfigEqual = (a, b) => {
+  const keys = ['name', 'address', 'connectionMode', 'ftpUsername', 'ftpPassword', 'serverPath', 'localPath', 'filterRule']
+  return keys.every(k => (a[k] || '') === (b[k] || ''))
+}
+
+/** 判断配置是否与现有服务器重复 */
+const isDuplicateConfig = (config) => {
+  return servers.value.some(s => isConfigEqual(getServerConfig(s), config))
+}
+
 const handleCopyConfig = async (server) => {
   const config = getServerConfig(server)
   const json = JSON.stringify(config, null, 2)
@@ -290,26 +301,43 @@ const handleImportFileSelect = (e) => {
 const addServersFromImportedData = (data) => {
   const list = Array.isArray(data) ? data : [data]
   const baseId = Date.now()
-  const newServers = list.map((item, index) => ({
-    id: baseId + index,
-    name: item.name || '未命名',
-    address: item.address || '',
-    connectionMode: item.connectionMode || 'ftp',
-    ftpUsername: item.ftpUsername || '',
-    ftpPassword: item.ftpPassword || '',
-    serverPath: item.serverPath || '',
-    localPath: item.localPath || '',
-    filterRule: item.filterRule || '',
-    uploading: false,
-    uploadProgress: null,
-    uploadStatus: null
-  }))
-  servers.value.push(...newServers)
-  saveServers()
-  handleCloseImportDialog()
-  if (newServers.length > 0) {
-    ElMessage.success(`成功导入 ${newServers.length} 个服务器配置`)
+  const toAdd = []
+  let duplicateCount = 0
+  for (let index = 0; index < list.length; index++) {
+    const item = list[index]
+    const config = {
+      name: item.name || '未命名',
+      address: item.address || '',
+      connectionMode: item.connectionMode || 'ftp',
+      ftpUsername: item.ftpUsername || '',
+      ftpPassword: item.ftpPassword || '',
+      serverPath: item.serverPath || '',
+      localPath: item.localPath || '',
+      filterRule: item.filterRule || ''
+    }
+    if (isDuplicateConfig(config)) {
+      duplicateCount++
+      continue
+    }
+    toAdd.push({
+      id: baseId + index,
+      ...config,
+      uploading: false,
+      uploadProgress: null,
+      uploadStatus: null
+    })
   }
+  if (duplicateCount > 0) {
+    ElMessage.warning(`已跳过 ${duplicateCount} 条重复配置（与现有服务器完全一致）`)
+  }
+  if (toAdd.length > 0) {
+    servers.value.push(...toAdd)
+    saveServers()
+    ElMessage.success(`成功导入 ${toAdd.length} 个服务器配置`)
+  } else if (duplicateCount === 0) {
+    ElMessage.info('没有可导入的配置')
+  }
+  handleCloseImportDialog()
 }
 
 const handleConfirmImport = () => {
@@ -439,6 +467,10 @@ const handleSubmit = () => {
       servers.value[index] = { ...editingServer.value, ...trimmed }
     }
   } else {
+    if (isDuplicateConfig(trimmed)) {
+      ElMessage.warning('该配置与已有服务器完全一致，无需重复添加')
+      return
+    }
     servers.value.push({
       id: Date.now(),
       ...trimmed,
